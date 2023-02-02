@@ -360,6 +360,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict,
         eval_batch = next(eval_iter)
         metrics = p_eval_step(state, eval_batch)
         eval_metrics.append(metrics)
+      print(eval_metrics)
       eval_metrics = common_utils.get_metrics(eval_metrics)
       summary = jax.tree_util.tree_map(lambda x: x.mean(), eval_metrics)
       logging.info('eval epoch: %d, loss: %.4f, accuracy: %.2f',
