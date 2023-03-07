@@ -15,7 +15,7 @@
 """Frozen Dictionary."""
 
 import collections
-from typing import Any, TypeVar, Mapping, Dict, Tuple
+from typing import Any, TypeVar, Mapping, Dict, Tuple, Union
 
 from flax import serialization
 import jax
@@ -189,7 +189,7 @@ def freeze(xs: Mapping[Any, Any]) -> FrozenDict[Any, Any]:
   return FrozenDict(xs)
 
 
-def unfreeze(x: FrozenDict[Any, Any]) -> Dict[Any, Any]:
+def unfreeze(x: Union[FrozenDict, Dict[str, Any]]) -> Dict[Any, Any]:
   """Unfreeze a FrozenDict.
 
   Makes a mutable copy of a `FrozenDict` mutable by transforming
@@ -205,7 +205,7 @@ def unfreeze(x: FrozenDict[Any, Any]) -> Dict[Any, Any]:
     # the dict branch would also work here but
     # it is much less performant because jax.tree_util.tree_map
     # uses an optimized C implementation.
-    return jax.tree_util.tree_map(lambda y: y, x._dict)  # pylint: disable=protected-access
+    return jax.tree_util.tree_map(lambda y: y, x._dict)  # type: ignore
   elif isinstance(x, dict):
     ys = {}
     for key, value in x.items():
@@ -213,6 +213,55 @@ def unfreeze(x: FrozenDict[Any, Any]) -> Dict[Any, Any]:
     return ys
   else:
     return x
+
+
+def copy(x: Union[FrozenDict, Dict[str, Any]], add_or_replace: Union[FrozenDict, Dict[str, Any]]) -> Union[FrozenDict, Dict[str, Any]]:
+  """Create a new dict with additional and/or replaced entries. This is a utility
+  function that can act on either a FrozenDict or regular dict and mimics the
+  behavior of `FrozenDict.copy`.
+
+  Example::
+
+  new_variables = copy(variables, {'additional_entries': 1})
+
+  Args:
+    x: the dictionary to be copied and updated
+    add_or_replace: dictionary of key-value pairs to add or replace in the dict x
+  Returns:
+    A new dict with the additional and/or replaced entries.
+  """
+
+  if isinstance(x, FrozenDict):
+    return x.copy(add_or_replace)
+  elif isinstance(x, dict):
+    new_dict = jax.tree_map(lambda x: x, x) # make a deep copy of dict x
+    new_dict.update(add_or_replace)
+    return new_dict
+  raise TypeError(f'Expected FrozenDict or dict, got {type(x)}')
+
+
+def pop(x: Union[FrozenDict, Dict[str, Any]], key: str) -> Tuple[Union[FrozenDict, Dict[str, Any]], Any]:
+  """Create a new dict where one entry is removed. This is a utility
+  function for regular dicts that mimics the behavior of `FrozenDict.pop`.
+
+  Example::
+
+    state, params = pop(variables, 'params')
+
+  Args:
+    x: the dictionary to remove the entry from
+    key: the key to remove from the dict
+  Returns:
+    A pair with the new dict and the removed value.
+  """
+
+  if isinstance(x, FrozenDict):
+    return x.pop(key)
+  elif isinstance(x, dict):
+    new_dict = jax.tree_map(lambda x: x, x) # make a deep copy of dict x
+    value = new_dict.pop(key)
+    return new_dict, value
+  raise TypeError(f'Expected FrozenDict or dict, got {type(x)}')
 
 
 def _frozen_dict_state_dict(xs):

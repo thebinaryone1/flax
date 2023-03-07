@@ -25,7 +25,7 @@ import os
 import pathlib
 import re
 import time
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type, Union
 
 from absl import logging
 from flax import config
@@ -39,7 +39,6 @@ import jax
 from jax import monitoring
 from jax import process_index
 from jax import sharding
-from jax.experimental.global_device_array import GlobalDeviceArray
 from jax.experimental.multihost_utils import sync_global_devices
 import orbax.checkpoint as orbax
 
@@ -88,7 +87,7 @@ PyTree = Any
 
 # TODO(flax-dev): Remove this once flax is using the latest jax release
 # containing jax.Array attribute.
-MultiprocessArrayType = Union[GlobalDeviceArray, Any]
+MultiprocessArrayType = Any
 
 
 def _checkpoint_path(ckpt_dir: str,
@@ -248,13 +247,7 @@ def _restore_mpas(state_dict,
     # Check if the given target array types are valid.
     shardings = []
     for _, arr, path in target_mpas:
-      # Use GDA with jax.config.jax_array turned off, or jax.experimental.array
-      # with jax.config.jax_array turned on.
-      if isinstance(arr, GlobalDeviceArray) and jax.config.jax_array:
-        raise errors.MPARestoreTypeNotMatchError(step, path)
-      if isinstance(arr, GlobalDeviceArray):
-        shardings.append(sharding.NamedSharding(arr.mesh, arr.mesh_axes))
-      elif jax.config.jax_array and isinstance(arr, jax.Array):
+      if isinstance(arr, jax.Array):
         shardings.append(arr.sharding)
 
     # Restore the arrays.
@@ -712,16 +705,16 @@ def save_checkpoint_multiprocess(
   return ckpt_path
 
 
-def latest_checkpoint(ckpt_dir: Union[str, os.PathLike],
-                      prefix: str = 'checkpoint_') -> Optional[str]:
-  """Retrieve the path of the latest checkpoint in a directory.
+def _all_checkpoints(ckpt_dir: Union[str, os.PathLike],
+                     prefix: str = 'checkpoint_') -> List[str]:
+  """Retrieve all checkpoint paths in directory.
 
   Args:
     ckpt_dir: str: directory of checkpoints to restore from.
     prefix: str: name prefix of checkpoint files.
 
   Returns:
-    The latest checkpoint path or None if no checkpoints were found.
+    Sorted list of checkpoint paths or empty list if no checkpoints were found.
   """
   ckpt_dir = os.fspath(ckpt_dir)  # Pathlib -> str
   checkpoint_files: List[Any] = [
@@ -735,9 +728,52 @@ def latest_checkpoint(ckpt_dir: Union[str, os.PathLike],
   ]
   checkpoint_files = natural_sort(checkpoint_files)
   if checkpoint_files:
+    return checkpoint_files
+  else:
+    return []
+
+
+def latest_checkpoint(ckpt_dir: Union[str, os.PathLike],
+                      prefix: str = 'checkpoint_') -> Optional[str]:
+  """Retrieve the path of the latest checkpoint in a directory.
+
+  Args:
+    ckpt_dir: str: directory of checkpoints to restore from.
+    prefix: str: name prefix of checkpoint files.
+
+  Returns:
+    The latest checkpoint path or None if no checkpoints were found.
+  """
+  checkpoint_files = _all_checkpoints(ckpt_dir, prefix)
+  if checkpoint_files:
     return checkpoint_files[-1]
   else:
     return None
+
+
+def available_steps(ckpt_dir: Union[str, os.PathLike],
+                    prefix: str = 'checkpoint_',
+                    step_type: Type = int) -> List[Union[int, float]]:
+  """Return step numbers of available checkpoints in a directory.
+
+
+  Args:
+    ckpt_dir: str: directory of checkpoints to restore from.
+    prefix: str: name prefix of checkpoint files.
+    step_type: type: type for steps, int (default) or float.
+
+  Returns:
+    Sorted list of available steps or empty list if no checkpoints were found.
+  """
+  checkpoint_files = _all_checkpoints(ckpt_dir, prefix)
+
+  checkpoint_steps = []
+
+  for file in checkpoint_files:
+    prefix_idx = file.rfind(prefix)
+    checkpoint_steps += [step_type(file[prefix_idx + len(prefix) :])]
+
+  return checkpoint_steps
 
 
 def restore_checkpoint(
@@ -827,9 +863,6 @@ def restore_checkpoint(
 
     def make_restore_args(x):
       if orbax_utils.is_multiprocess_array(x):
-        if isinstance(x, GlobalDeviceArray):
-          return orbax.ArrayRestoreArgs(restore_type=GlobalDeviceArray,
-                                        mesh=x.mesh, mesh_axes=x.mesh_axes)
         return orbax.ArrayRestoreArgs(
             restore_type=jax.Array,
             mesh=x.sharding.mesh,

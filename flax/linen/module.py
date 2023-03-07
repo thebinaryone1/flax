@@ -35,6 +35,7 @@ import flax
 from flax import (config, core, errors, serialization, traceback_util,
                   traverse_util)
 from flax.core import Scope
+from flax.core import partial_eval
 from flax.core.frozen_dict import FrozenDict
 from flax.core.scope import (  # pylint: disable=g-multiple-import
     CollectionFilter, DenyList, FrozenVariableDict, Variable, VariableDict,
@@ -630,9 +631,30 @@ def create_descriptor_wrapper(descriptor: Descriptor):
 # Base Module definition.
 # -----------------------------------------------------------------------------
 
-
+# The ModuleBase class is created only to make static analyzers happy
+# mainly pytype and pyright. Some notes:
+# * pyright (correctly) complains that Module itself is not a dataclass, even
+#   though all its subclasses and intances ARE dataclasses. Because there is no
+#   way to annotate this in a way that pyright understands, we create a
+#   ModuleBase class decorated with `dataclass_transform` such that pyright
+#   thinks Module is a dataclass (in reality only subclasses are instantiated
+#   so this is fine).
+# * The `__dataclass_fields__` attribute is needed because pytype seems to
+#   not understand the `dataclass_transform` decorator, therefore we need
+#   to add the attribute manually.
+# * Other attributes are annotated for completeness. Because we are using
+#   the `if typing.TYPE_CHECKING` pattern, these annotations are not present
+#   at runtime so they don't affect the dataclass behavior.
 @dataclass_transform()
-class Module:
+class ModuleBase:
+  if typing.TYPE_CHECKING:
+    scope: Optional[Scope]
+    _state: _ModuleInternalState
+    _parent_ref: Union['Module', weakref.ReferenceType['Module'], None]
+    parent: Union['Module', _Sentinel, None]
+    __dataclass_fields__: Dict[str, dataclasses.Field]
+
+class Module(ModuleBase):
   """Base class for all neural network modules. Layers and models should subclass this class.
 
   All Flax Modules are Python 3.7
@@ -666,7 +688,6 @@ class Module:
   """
 
   if typing.TYPE_CHECKING:
-
     def __init__(self, *args, **kwargs):
       # this stub makes sure pytype accepts constructor arguments.
       pass
@@ -694,7 +715,7 @@ class Module:
     cls.scope: Optional[Scope] = None # type: ignore
     # Handles weak referencing of parent Modules to prevent reference cycles.
     cls._parent_ref = None # type: ignore[attr-defined]
-    cls.parent = ParentDescriptor() # type: ignore[attr-defined]
+    cls.parent = ParentDescriptor() # type: ignore[assignment]
 
   @classmethod
   def _customized_dataclass_transform(cls):
@@ -811,6 +832,7 @@ class Module:
     try:
       # get call info
       if add_call_info:
+        assert self.scope is not None
         call_index = _context.call_info_stack[-1].get_call_index(self)
         scope_path = jax.tree_util.tree_map(_fix_path_part, self.scope.path)
 
@@ -946,6 +968,7 @@ class Module:
         raise errors.NameInUseError('submodule', self.name, parent_class)
       # Finalize attachment to parent and scope initialization.
       self.parent._state.children[self.name] = self
+      assert self.parent.scope is not None
       object.__setattr__(
           self, 'scope', self.parent.scope.push(self.name, reuse=reuse_scopes))
 
@@ -1002,25 +1025,26 @@ class Module:
     cache = _caches.get(root, weakref.WeakValueDictionary())
     _caches[root] = cache
     queue = []
+    preserve_adopted_names = config.flax_preserve_adopted_names
+    if hasattr(self, 'preserve_adopted_names'):
+       preserve_adopted_names = self.preserve_adopted_names
     def adopt_attr_modules(cache, queue, suffix, subvalue):
       if isinstance(subvalue, Module):
         adopted_name = None
         if subvalue.parent is None:
-          # Module was passed from outside. It needs to be cloned.
-          # Outside modules are named by attachment, not an outer name,
-          # UNLESS we're using new relaxed naming, in which case an existing
-          # name will be used.
-          if config.flax_relaxed_naming:
-            adopted_name = object.__getattribute__(subvalue, 'name')
-          object.__setattr__(subvalue, 'name', None)
           # Preserve sharing-by-reference relationships during adoption
           # via cache keyed on unique instance ids.
           key = subvalue._id
+          # Module was passed from outside. It needs to be cloned.
+          # Outside modules are named by attachment, not an outer name,
+          # UNLESS we're using new adopted name policy, in which case an existing
+          # name will be used, as is often supplied by config systems.
+          if preserve_adopted_names:
+            adopted_name = object.__getattribute__(subvalue, 'name')
           if key in cache:
             subvalue = cache[key]
           else:
-            # We must bind to local variable before adding to weakvalue dict.
-            subvalue = subvalue.clone()
+            subvalue = subvalue.clone(name=None)
             cache[key] = subvalue
         if subvalue.name is None:
           object.__setattr__(subvalue, 'parent', self)
@@ -1071,6 +1095,7 @@ class Module:
                   module: Optional['Module'] = None,
                   reuse_scopes: bool = False,
                   collection: Optional[str] = None) -> bool:
+    assert self.scope is not None
     # with relaxed naming don't force non-overlap with python attribute names.
     if config.flax_relaxed_naming:
       if reuse_scopes:
@@ -1149,6 +1174,7 @@ class Module:
           'wrapped in `@compact`')
     if self._name_taken(name, collection=col):
       raise errors.NameInUseError('variable', name, self.__class__.__name__)
+    assert self.scope is not None
     v = self.scope.variable(col, name, init_fn, *init_args, unbox=unbox)
     self._state.children[name] = col
     return v
@@ -1189,6 +1215,7 @@ class Module:
           'wrapped in `@compact`')
     if self._name_taken(name, collection='params'):
       raise errors.NameInUseError('param', name, self.__class__.__name__)
+    assert self.scope is not None
     v = self.scope.param(name, init_fn, *init_args, unbox=unbox)
     self._state.children[name] = 'params'
     return v
@@ -1368,7 +1395,7 @@ class Module:
             method: Union[Callable[..., Any], str, None] = None,
             mutable: CollectionFilter = False,
             capture_intermediates: Union[bool, Callable[['Module', str], bool]] = False,
-            **kwargs) -> Union[Any, Tuple[Any, FrozenVariableDict]]:
+            **kwargs) -> Union[Any, Tuple[Any, Union[FrozenVariableDict, Dict[str, Any]]]]:
     """Applies a module method to variables and returns output and modified variables.
 
     Note that `method` should be set if one would like to call `apply` on a
@@ -1450,7 +1477,7 @@ class Module:
                        method: Union[Callable[..., Any], str, None] = None,
                        mutable: CollectionFilter = DenyList('intermediates'),
                        capture_intermediates: Union[bool, Callable[['Module', str], bool]] = False,
-                       **kwargs) -> Tuple[Any, FrozenVariableDict]:
+                       **kwargs) -> Tuple[Any, Union[FrozenVariableDict, Dict[str, Any]]]:
     """Initializes a module method with variables and returns output and modified variables.
 
     Args:
@@ -1507,7 +1534,7 @@ class Module:
            method: Union[Callable[..., Any], str, None] = None,
            mutable: CollectionFilter = DenyList('intermediates'),
            capture_intermediates: Union[bool, Callable[['Module', str], bool]] = False,
-           **kwargs) -> FrozenVariableDict:
+           **kwargs) -> Union[FrozenVariableDict, Dict[str, Any]]:
     """Initializes a module method with variables and returns modified variables.
 
     ``init`` takes as first argument either a single ``PRNGKey``, or a dictionary mapping variable collections names to their ``PRNGKeys``, and will call ``method`` (which is the module's ``__call__`` function by default) passing ``*args`` and ``**kwargs``, and returns
@@ -1596,6 +1623,51 @@ class Module:
         capture_intermediates=capture_intermediates,
         **kwargs)
     return v_out
+
+  @traceback_util.api_boundary
+  def lazy_init(self,
+           rngs: Union[PRNGKey, RNGSequences],
+           *args,
+           method: Optional[Callable[..., Any]] = None,
+           mutable: CollectionFilter = DenyList('intermediates'),
+           **kwargs) -> FrozenVariableDict:
+    """Initializes a module without computing on an actual input.
+
+    lazy_init will initialize the variables without doing unnecessary compute.
+    The input data should be passed as a ``jax.ShapeDtypeStruct`` which specifies
+    the shape and dtype of the input but no concrete data.
+
+    Example::
+
+      model = nn.Dense(features=256)
+      variables = model.lazy_init(rng, jax.ShapeDtypeStruct((1, 128), jnp.float32))
+
+    The args and kwargs args passed to ``lazy_init`` can be a mix of
+    concrete (jax arrays, scalars, bools) and abstract (ShapeDtypeStruct) values.
+    Concrete values are only necessary for arguments that affect
+    the initialization of variables. For example, the model might expect
+    a keyword arg that enables/disables a subpart of the model.
+    In this case, an explicit value (True/Flase) should be passed otherwise
+    ``lazy_init`` cannot infer which variables should be initialized.
+
+    Args:
+      rngs: The rngs for the variable collections.
+      *args: arguments passed to the init function.
+      method: An optional method. If provided, applies this method. If not
+        provided, applies the ``__call__`` method.
+      mutable: Can be bool, str, or list. Specifies which collections should be
+        treated as mutable: ``bool``: all/no collections are mutable.
+        ``str``: The name of a single mutable collection. ``list``: A
+        list of names of mutable collections. By default all collections
+        except "intermediates" are mutable.
+      **kwargs: Keyword arguments passed to the init function.
+    Returns:
+      The initialized variable dict.
+    """
+    Module._module_checks(self)
+    def lazy_wrapper(rngs, *args, **kwargs):
+      return self.init(rngs, *args, method=method, mutable=mutable, **kwargs)
+    return partial_eval.lazy_init(lazy_wrapper)(rngs, *args, **kwargs)
 
   @property
   def variables(self) -> VariableDict:
@@ -1978,7 +2050,7 @@ def apply(fn: Callable[..., Any], module: Module,
 def init_with_output(fn: Callable[..., Any], module: Module,
                      mutable: CollectionFilter = DenyList('intermediates'),
                      capture_intermediates: Union[bool, Callable[[Module, str], bool]] = False,
-                     ) -> Callable[..., Tuple[Any, FrozenVariableDict]]:
+                     ) -> Callable[..., Tuple[Any, Union[FrozenVariableDict, Dict[str, Any]]]]:
   """Creates an init function to call ``fn`` with a bound module that also returns the function outputs.
 
   Unlike ``Module.init_with_output`` this function returns a new function with the signature
@@ -2039,7 +2111,7 @@ def init_with_output(fn: Callable[..., Any], module: Module,
 def init(fn: Callable[..., Any], module: Module,
          mutable: CollectionFilter = DenyList('intermediates'),
          capture_intermediates: Union[bool, Callable[[Module, str], bool]] = False,
-         ) -> Callable[..., FrozenVariableDict]:
+         ) -> Callable[..., Union[FrozenVariableDict, Dict[str, Any]]]:
   """Creates an init function to call ``fn`` with a bound module.
 
   Unlike ``Module.init`` this function returns a new function with the signature
