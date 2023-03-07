@@ -60,6 +60,37 @@ class FlaxError(Exception):
 
 
 #################################################
+# lazy_init.py errors                           #
+#################################################
+
+
+class LazyInitError(FlaxError):
+  """Lazy Init function has uncomputable return values.
+
+  This happens when passing an argument to lazy_init with ``jax.ShapeDtypeStruct``
+  that affects the initialized variables.
+  Make sure the init function only uses the shape and dtype or pass an
+  actual JAX array if this is impossible.
+
+  Example::
+
+    class Foo(nn.Module):
+      @compact
+      def __call__(self, x):
+        # This parameter depends on the input x
+        # this causes an error when using lazy_init.
+        k = self.param("kernel", lambda _: x)
+        return x * k
+    Foo().lazy_init(random.PRNGKey(0), jax.ShapeDtypeStruct((8, 4), jnp.float32))
+  """
+
+  def __init__(self, partial_val):
+    super().__init__(
+        f'Lazy init encoutered a value that could with '
+        f'the given inputs (shape: {partial_val}).')
+
+
+#################################################
 # scope.py errors                               #
 #################################################
 
@@ -74,7 +105,7 @@ class InvalidRngError(FlaxError):
     class Bar(nn.Module):
       @nn.compact
       def __call__(self, x):
-        some_param = self.param('some_param', nn.initializers.zeros, (1, ))
+        some_param = self.param('some_param', nn.initializers.zeros_init(), (1, ))
         dropout_rng = self.make_rng('dropout')
         x = nn.Dense(features=4)(x)
         ...
@@ -364,7 +395,7 @@ class NameInUseError(FlaxError):
     class Foo(nn.Module):
       @nn.compact
       def __call__(self, x):
-        bar = self.param('bar', nn.initializers.zeros, (1, ))
+        bar = self.param('bar', nn.initializers.zeros_init(), (1, ))
         embed = nn.Embed(num_embeddings=2, features=5, name='bar')  # <-- ERROR!
 
   Variables should also have unique names, even if they have their own
@@ -374,7 +405,7 @@ class NameInUseError(FlaxError):
       @nn.compact
       def __call__(self, inputs):
         _ = self.param('mean', initializers.lecun_normal(), (2, 2))
-        _ = self.variable('stats', 'mean', initializers.zeros, (2, 2))
+        _ = self.variable('stats', 'mean', initializers.zeros_init(), (2, 2))
   """
 
   def __init__(self, key_type, value, module_name):

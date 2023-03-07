@@ -6,10 +6,6 @@ jupytext:
     format_name: myst
     format_version: 0.13
     jupytext_version: 1.13.8
-kernelspec:
-  display_name: Python 3
-  language: python
-  name: python3
 ---
 
 +++ {"id": "2a9f78765c0c"}
@@ -42,9 +38,10 @@ Install Flax from HEAD:
 
 ```{code-cell} ipython3
 :id: 867203db3bef
+:tags: [skip-execution]
 
 # Once Flax v0.6.4 is released, use `pip3 install flax`.
-!pip3 install -qq "git+https://github.com/google/flax.git@main#egg=flax"
+! pip3 install -qq "git+https://github.com/google/flax.git@main#egg=flax"
 ```
 
 +++ {"id": "a9601432b448"}
@@ -94,8 +91,8 @@ Next, import all the `pjit`-related libraries.
 ```{code-cell} ipython3
 :id: 684fe9fe13a0
 
-from jax.experimental.pjit import pjit, with_sharding_constraint, PartitionSpec
-from jax.experimental.maps import Mesh
+from jax.experimental.pjit import pjit, with_sharding_constraint
+from jax.sharding import Mesh, PartitionSpec
 from jax.experimental import mesh_utils
 
 # Start a device mesh.
@@ -207,7 +204,7 @@ class MLP(nn.Module):
 
 ## Specify sharding (includes initialization and `TrainState` creation)
 
-Next, generate the [`jax.experimental.pjit.PartitionSpec`](https://jax.readthedocs.io/en/latest/jax-101/08-pjit.html?#more-information-on-partitionspec) that `pjit` should receive as annotations of _input_ and _output_ data. `PartitionSpec` is a tuple of 2 axes (in a 2x4 mesh). To learn more, refer to [JAX-101: Introduction to `pjit`](https://jax.readthedocs.io/en/latest/jax-101/08-pjit.html).
+Next, generate the [`jax.sharding.PartitionSpec`](https://jax.readthedocs.io/en/latest/jax-101/08-pjit.html?#more-information-on-partitionspec) that `pjit` should receive as annotations of _input_ and _output_ data. `PartitionSpec` is a tuple of 2 axes (in a 2x4 mesh). To learn more, refer to [JAX-101: Introduction to `pjit`](https://jax.readthedocs.io/en/latest/jax-101/08-pjit.html).
 
 ### Specify the input
 
@@ -275,7 +272,7 @@ state_spec
 
 Now you can apply JAX [`pjit`](https://jax.readthedocs.io/en/latest/jax.experimental.pjit.html#module-jax.experimental.pjit) to your `init_fn` in a similar fashion as [`jax.jit`](https://jax.readthedocs.io/en/latest/jax-101/02-jitting.html) but with two extra arguments: `in_axis_resources` and `out_axis_resources`.
 
-You need to add a `with mesh:` context when running a `pjit`ted function, so that it can refer to `mesh` (an instance of `jax.experimental.maps.Mesh`) to allocate data on devices correctly.
+You need to add a `with mesh:` context when running a `pjit`ted function, so that it can refer to `mesh` (an instance of `jax.sharding.Mesh`) to allocate data on devices correctly.
 
 ```{code-cell} ipython3
 :id: a298c5d03c0d

@@ -12,15 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from flax.core import FrozenDict, unfreeze, freeze
+from flax.core import FrozenDict, unfreeze, freeze, copy, pop
 
 import jax
 
 
-from absl.testing import absltest
+from absl.testing import absltest, parameterized
 
 
-class FrozenDictTest(absltest.TestCase):
+class FrozenDictTest(parameterized.TestCase):
 
   def test_frozen_dict_copies(self):
     xs = {'a': 1, 'b': {'c': 2}}
@@ -83,6 +83,39 @@ class FrozenDictTest(absltest.TestCase):
   def test_frozen_dict_copy_reserved_name(self):
     result = FrozenDict({'a': 1}).copy({'cls': 2})
     self.assertEqual(result, {'a': 1, 'cls': 2})
+
+  @parameterized.parameters(
+    {
+      'x': {'a': 1, 'b': {'c': 2}},
+      'key': 'b',
+      'actual_new_x': {'a': 1},
+      'actual_value': {'c': 2}
+    }, {
+      'x': FrozenDict({'a': 1, 'b': {'c': 2}}),
+      'key': 'b',
+      'actual_new_x': FrozenDict({'a': 1}),
+      'actual_value': FrozenDict({'c': 2})
+    },
+  )
+  def test_utility_pop(self, x, key, actual_new_x, actual_value):
+    new_x, value = pop(x, key)
+    self.assertTrue(new_x == actual_new_x and isinstance(new_x, type(actual_new_x)))
+    self.assertTrue(value == actual_value and isinstance(value, type(actual_value)))
+
+  @parameterized.parameters(
+    {
+      'x': {'a': 1, 'b': {'c': 2}},
+      'add_or_replace': {'b': {'c': -1, 'd': 3}},
+      'actual_new_x': {'a': 1, 'b': {'c': -1, 'd': 3}},
+    }, {
+      'x': FrozenDict({'a': 1, 'b': {'c': 2}}),
+      'add_or_replace': FrozenDict({'b': {'c': -1, 'd': 3}}),
+      'actual_new_x': FrozenDict({'a': 1, 'b': {'c': -1, 'd': 3}}),
+    },
+  )
+  def test_utility_copy(self, x, add_or_replace, actual_new_x):
+    new_x = copy(x, add_or_replace=add_or_replace)
+    self.assertTrue(new_x == actual_new_x and isinstance(new_x, type(actual_new_x)))
 
 
 if __name__ == '__main__':

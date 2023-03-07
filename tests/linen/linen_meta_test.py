@@ -20,9 +20,9 @@ import jax
 from jax import numpy as jnp
 from jax import random
 from jax.experimental import mesh_utils
-from jax.experimental.maps import Mesh
-from jax.experimental.pjit import PartitionSpec
 from jax.experimental.pjit import pjit
+from jax.sharding import Mesh
+from jax.sharding import PartitionSpec
 
 
 class LinenMetaTest(absltest.TestCase):
@@ -32,7 +32,7 @@ class LinenMetaTest(absltest.TestCase):
 
       @nn.compact
       def __call__(mdl_self, x):  # pylint: disable=no-self-argument
-        kernel_init = nn.with_partitioning(nn.initializers.ones,
+        kernel_init = nn.with_partitioning(nn.initializers.ones_init(),
                                            ('in', 'out'))
         kernel = mdl_self.param('kernel', kernel_init, (x.shape[-1], 2))
         kernel_box = mdl_self.get_variable('params', 'kernel')
@@ -60,7 +60,7 @@ class LinenMetaTest(absltest.TestCase):
 
       @nn.compact
       def __call__(mdl_self, x):  # pylint: disable=no-self-argument
-        kernel_init = nn.with_partitioning(nn.initializers.ones,
+        kernel_init = nn.with_partitioning(nn.initializers.ones_init(),
                                            ('in', 'out'))
         kernel = mdl_self.variable(
             'params', 'kernel', kernel_init,
@@ -90,7 +90,7 @@ class LinenMetaTest(absltest.TestCase):
   # def test_boxed_variable(self):
   #   def f(scope, xs):
   #     def g(scope, x):
-        # kernel_init = nn.with_partitioning(nn.initializers.ones,
+        # kernel_init = nn.with_partitioning(nn.initializers.ones_init(),
         #                                      ('in', 'out'))
         # kernel = scope.variable('params', 'kernel', kernel_init,
         #                         scope.make_rng('params'), (x.shape[-1], 2))
@@ -144,7 +144,7 @@ class LinenMetaTest(absltest.TestCase):
     x = jnp.ones((8, 128))
     spec = nn.get_partition_spec(
         jax.eval_shape(model.init, random.PRNGKey(0), x))
-    self.assertEqual(spec.unfreeze(), {
+    self.assertEqual(spec, {
         'params': {
             'MLP_0': {
                 'Dense_0': {

@@ -14,7 +14,7 @@
 
 import unittest
 from flax import errors
-from flax.core import Scope, scope, freeze, init, apply, nn
+from flax.core import Scope, scope, freeze, lazy_init, init, apply, nn
 from flax.core.scope import LazyRng
 
 import jax
@@ -105,7 +105,7 @@ class ScopeTest(absltest.TestCase):
 
   def test_inconsistent_param_shapes(self):
     def f(scope):
-      scope.param('test', nn.initializers.ones, (4,))
+      scope.param('test', nn.initializers.ones_init(), (4,))
 
     msg = r'Inconsistent shapes between value and initializer for parameter "test" in "/": \(2,\), \(4,\).'
     with self.assertRaisesRegex(errors.ScopeParamShapeError, msg):
@@ -113,7 +113,7 @@ class ScopeTest(absltest.TestCase):
 
   def test_apply_variables_bad_pytree(self):
     def f(scope):
-      scope.param('kernel', nn.initializers.ones, (4,))
+      scope.param('kernel', nn.initializers.ones_init(), (4,))
 
     params = freeze({
         'params': {
@@ -188,10 +188,10 @@ class ScopeTest(absltest.TestCase):
   def test_empty_col_error(self):
     root = Scope({})
     with self.assertRaises(errors.ScopeCollectionNotFound):
-      root.param('test', nn.initializers.zeros, ())
+      root.param('test', nn.initializers.zeros_init(), ())
     root = Scope({'params': {}})
     with self.assertRaises(errors.ScopeCollectionNotFound):
-      root.param('test', nn.initializers.zeros, ())
+      root.param('test', nn.initializers.zeros_init(), ())
 
     root = Scope({'params': {'abc': 1}})
     with self.assertRaises(errors.ScopeCollectionNotFound):
@@ -217,6 +217,23 @@ class ScopeTest(absltest.TestCase):
     scope.put_variable('state', 'a', {'x': jnp.array(1., jnp.float32)})
     self.assertEqual(scope.variables()['state']['a']['x'], subscope.variables()['state']['x'])
 
+  def test_lazy_init(self):
+    def f(scope, x):
+      k = scope.param("kernel", nn.initializers.lecun_normal(), (x.shape[-1], x.shape[-1]))
+      return x @ k
+    init_fn = lazy_init(f)
+    # provide a massive input message which would OOM if any compute ops were actually executed
+    variables = init_fn(random.PRNGKey(0), jax.ShapeDtypeStruct((1024 * 1024 * 1024, 128), jnp.float32))
+    self.assertEqual(variables["params"]["kernel"].shape, (128, 128))
+
+  def test_lazy_init_fails_on_data_dependence(self):
+    def f(scope, x):
+      # kernel is initialized with x so params are now dependent on the input
+      k = scope.param("kernel", lambda _: x)
+      return x * k
+    init_fn = lazy_init(f)
+    with self.assertRaises(errors.LazyInitError):
+      init_fn(random.PRNGKey(0), jax.ShapeDtypeStruct((8, 4), jnp.float32))
 
 if __name__ == '__main__':
   absltest.main()

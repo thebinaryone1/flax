@@ -19,7 +19,6 @@ from flax.core import init, lift, meta, nn
 import jax
 from jax import numpy as jnp
 from jax import random
-from jax.experimental import pjit
 
 
 class MetaTest(absltest.TestCase):
@@ -27,7 +26,7 @@ class MetaTest(absltest.TestCase):
   def test_boxed_param(self):
     def f(scope, xs):
       def g(scope, x):
-        kernel_init = meta.with_partitioning(nn.initializers.ones,
+        kernel_init = meta.with_partitioning(nn.initializers.ones_init(),
                                              ('in', 'out'))
         kernel = scope.param('kernel', kernel_init, (x.shape[-1], 2))
         kernel_box = scope.get_variable('params', 'kernel')
@@ -47,7 +46,7 @@ class MetaTest(absltest.TestCase):
   def test_boxed_variable(self):
     def f(scope, xs):
       def g(scope, x):
-        kernel_init = meta.with_partitioning(nn.initializers.ones,
+        kernel_init = meta.with_partitioning(nn.initializers.ones_init(),
                                              ('in', 'out'))
         kernel = scope.variable('params', 'kernel', kernel_init,
                                 scope.make_rng('params'), (x.shape[-1], 2))
@@ -70,7 +69,7 @@ class MetaTest(absltest.TestCase):
   def test_partition_axis_unspecified(self):
     def f(scope, xs):
       def g(scope, x):
-        kernel_init = meta.with_partitioning(nn.initializers.ones,
+        kernel_init = meta.with_partitioning(nn.initializers.ones_init(),
                                              ('in', 'out'))
         scope.param('kernel', kernel_init, (3, 2))
         return x
@@ -98,7 +97,7 @@ class MetaTest(absltest.TestCase):
   def test_scan_over_layers(self):
     def f(scope, x):
       def body(scope, x):
-        kernel_init = meta.with_partitioning(nn.initializers.ones,
+        kernel_init = meta.with_partitioning(nn.initializers.ones_init(),
                                              ('in', 'out'))
         y = nn.dense(scope, x, 3, kernel_init=kernel_init)
         return y, ()
@@ -111,7 +110,7 @@ class MetaTest(absltest.TestCase):
       return c
 
     _, variables = init(f)(random.PRNGKey(0), jnp.zeros((8, 3)))
-    boxed_shapes = jax.tree_map(jnp.shape, variables['params'].unfreeze())
+    boxed_shapes = jax.tree_map(jnp.shape, variables['params'])
     self.assertEqual(boxed_shapes, {
         'kernel': meta.Partitioned((8, 3, 3), ('layers', 'in', 'out')),
         'bias': (8, 3),
@@ -122,8 +121,13 @@ class MetaTest(absltest.TestCase):
                                      ('layers', 'in', 'out')),
           'bias': jnp.zeros((8, 3))}
     ps = meta.get_partition_spec(xs)
-    self.assertEqual(ps, {'kernel': pjit.PartitionSpec('layers', 'in', 'out'),
-                          'bias': None})
+    self.assertEqual(
+        ps,
+        {
+            'kernel': jax.sharding.PartitionSpec('layers', 'in', 'out'),
+            'bias': None,
+        },
+    )
 
 
 if __name__ == '__main__':
